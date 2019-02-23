@@ -1,0 +1,182 @@
+---
+title: "final_work_federico_loguercio"
+author: "Federico Loguercio"
+date: "12/21/2018"
+output: html_document
+---
+
+```{r setup, echo = F}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, warning = F, message = F)
+options(repos=c(CRAN="https://cran.rediris.es/"))
+```
+
+```{r Instructions, echo=FALSE}
+
+#R Markdown
+
+#Download the nasdaq_symbols.xlsx file from the datasets area in the campus. 
+#It contains symbols and companies names for the Nasdaq stock market.
+#Create a report where you analize the relationship between the average daily 
+#return and the volatility (sd), for each symbol.
+#Is (daily) profitability related with (daily) volatility? 
+#Create a clustering of companies, using the mean and sd of daily returns as the spliting variables. 
+#Analize the results.
+#Important: Due date is friday 21st dec. at 11.59 PM. Submit a single file (or zipped folder) with the naming structure: final_work_firstName_lastName
+
+```
+
+
+```{r packages, echo=FALSE}
+rm(list=ls())
+# Set wd to folder containing nasdaq_symbols.xlsx
+wd <- getwd()
+
+#Install necessary packages if not downloaded:
+if(!"quantmod" %in% installed.packages()) {
+  install.packages("quandmod")
+} 
+if(!"readxl" %in% installed.packages()) {
+  install.packages("readxl")}
+if(!"data.table" %in% installed.packages()) {
+  install.packages("data.table")}
+if(!"ggplot2" %in% installed.packages()) {
+  install.packages("ggplot2")}
+if(!"plotly" %in% installed.packages()) {
+  install.packages("plotly")}
+if(!"wesanderson" %in% installed.packages()) {
+  install.packages("wesanderson")}
+```
+
+### Is daily profitability related to volatility?
+Read data for a set of nasdaq stocks, since 2010:
+```{r readdata}
+library(data.table)
+library(readxl)
+library(quantmod)
+nasdaq_symbols <- as.data.table(read_xlsx(paste0(wd,"/nasdaq_symbols.xlsx")))
+
+# Get stock data for all tickers, lapplying getSymbols to every ticker. Auto.assign in order to return results
+stocks <- lapply(nasdaq_symbols$Symbol, function(x) getSymbols(x, auto.assign=F, from = "2010/01/01"))
+```
+
+
+Prepare data into the desired format, with two values for each stock, average daily return and volatility:
+```{r preparedata}
+# Extract closing price, keep xts format:
+# Inside: lApply quantmod function Cl to extract the closing price from every list in stocks
+# Outside: Apply merge to the resulting list (like lapply, but taking instead of returning a list)
+closing_price <- do.call(merge, lapply(stocks, function(x) Cl(x)))
+
+# Create object with daily returns
+# Inside: lApply quantmod's dailyReturn function to each element in closing_price
+# Outside: Apply xts' merge.xts function (package loaded with quantmod) to every object in list
+# just created, returning another xts
+daily_returns <- do.call(merge.xts, lapply(closing_price, dailyReturn))
+
+# Assign original column names to daily_returns. Column order was not changed
+names(daily_returns) <- names(closing_price)
+
+# Calculate average daily return and volatilty (as standard deviation)
+# for each stock
+mean_sd <- as.data.table(sapply(daily_returns, function(x) c("avg_daily_return"= mean(x,na.rm=T), "volatility" = sd(x, na.rm=T))))
+
+# Transpose data in order to have a row for mean and one for sd using
+#data.table function transpose, assigning colnames:
+final <- transpose(mean_sd, fill=NA, ignore.empty=FALSE)
+colnames(final) <- c('avg_daily_return', 'volatility')
+# Create variable with ticker, cropping only the ticket (string before the dot)
+final$ticker <- names(mean_sd)
+final$ticker <- sub("\\..*", "", final$ticker)
+
+# Scale each numeric variable for clustering with mean=0, sd=1
+data_cluster<-data.table(scale(final[, final[,c('avg_daily_return', 'volatility')]]))
+```
+
+
+Is there a correlation between daily profitability and volatility?
+```{r correlation, echo = F}
+# Call necessary libraries
+library(ggplot2)
+library(plotly)
+# Are volatility and return correlated?
+print(paste("Pearson correlation coefficient =", cor(final$volatility, final$avg_daily_return)))
+
+# Plot Return on volatility, adding a fitted linear model with shaded confidence intervals
+ggplotly(ggplot(final, aes(volatility, avg_daily_return, text = ticker)) +
+  geom_point(color="darkred") +
+  labs(title = 'Return and Volatility', y = 'Avg. Daily Return', x = 'Volatility') +
+  geom_smooth(data = final, method = lm, inherit.aes = F, aes(volatility, avg_daily_return),color="darkgreen"))
+
+```
+The graph suggests a positive relationship between volatility and average daily returns. The simple linear model shown in green confirms this.
+
+
+#### Are there different groups of stocks in terms of this relationship? A clustering analysis could yield some insights.
+What is the ideal number of clusters for K-means clustering?
+```{r numofclusters}
+# Determine optimum numbers of clusters using ellbow method, plotting
+# within cluster sum of square
+set.seed(1337)
+# Compute within cluster sum of square for k = 2 to k = 10
+# nstart = 10: Try different initial centroids and choose best
+# Apply the function kmeans using k ranging from 2 to 10, extract only
+# the output element indicating total within sum of squares and assign to wss
+wss <- sapply(1:10, function(k){kmeans(data_cluster, k, nstart=10)$tot.withinss})
+
+#Plot the different wss
+plot(1:10, wss,type="b", pch = 19, frame = FALSE, xlab="Number of clusters K", ylab="Total within-clusters sum of squares")
+```
+
+The graph suggests that the decrease in within cluster sum of squares is much lower with every additional cluster after k=2.
+
+
+```{r clustering_2}
+# Fit kmeans with 2 clusters
+kmeans_2 <- kmeans(data_cluster, 2, nstart=10)
+
+final$cluster_2 <- as.factor(kmeans_2$cluster)
+
+# Load some nice colour palettes
+library(wesanderson)
+
+ggplotly(ggplot(final, aes(volatility, avg_daily_return, colour = cluster_2, text = ticker)) +
+  geom_point() +
+  labs(title = 'Return and Volatility, 2 Clusters', y = 'Avg. Daily Return', x = 'Volatility') +
+  scale_color_manual(values=wes_palette(n=2, name="Darjeeling1"))+
+  theme(legend.position = "none"))
+```
+
+
+Explore different numbers of clusters in order to analyse, if a number different from 2 yields clusters with clearer profiles
+```{r clustering_3}
+# Fit kmeans with 3 clusters
+kmeans_3 <- kmeans(data_cluster, 3, nstart=10)
+
+final$cluster_3 <- as.factor(kmeans_3$cluster)
+
+ggplotly(ggplot(final, aes(volatility, avg_daily_return, colour = cluster_3, text = ticker)) +
+  geom_point() +
+  labs(title = 'Return and Volatility, 3 Clusters', y = 'Avg. Daily Return', x = 'Volatility') +
+  scale_color_manual(values=wes_palette(n=3, name="Darjeeling1"))+
+  theme(legend.position = "none"))
+```
+
+```{r clustering_4}
+# Fit kmeans with 3 clusters
+set.seed(1337)
+kmeans_4 <- kmeans(data_cluster, 4, nstart=10)
+
+final$cluster_4 <- as.factor(kmeans_4$cluster)
+
+ggplotly(ggplot(final, aes(volatility, avg_daily_return, colour = cluster_4, text = ticker)) +
+  geom_point() +
+  labs(title = 'Return and Volatility, 4 Clusters', y = 'Avg. Daily Return', x = 'Volatility') +
+  scale_color_manual(values=wes_palette(n=4, name="Darjeeling1"))+
+  theme(legend.position = "none"))
+
+# Create file for shiny app
+write.csv(final, "federico_data.csv")
+```
+
+In general, it can be observed that K-means splits the stocks into low volatility and low returns vs high volatility and high returns, with various levels according to the number of clusters. When adding a third cluster, the stocks with negative average daily returns are grouped into one separate cluster, which could be interpreted as an outliers-cluster. Nothing unexpected is revealed.
+From the four-cluster solution the following could be inferred: The red cluster is made up of negative averagereturn stocks which should be avoided. The orange stocks are a good low-risk option: returns are decent, with low risk (volatility). The yellow cluster is a more high-yield set of stocks, with high returns at the cost of high volatility. The green cluster is somewhat in between.
